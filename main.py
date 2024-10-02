@@ -3,18 +3,15 @@ import speech_recognition as sr
 import openai
 import yaml
 import requests
+import re
 
 
 
-def chamar_yml(nome,api):
-    arquivo_yml = 'config.yml'
-    with open(arquivo_yml, 'r') as arquivo:
-        dados = yaml.safe_load(arquivo)
-    return dados[nome][api]
 
+with open('config.yml', 'r') as arquivo:
+    dados = yaml.safe_load(arquivo)
 
-dados = chamar_yml('open_ia','api')
-openai.api_key  = dados
+openai.api_key = dados['open_ia']['api']
 
 # Inicialização do sintetizador de voz
 speak = pyttsx3.init()
@@ -56,51 +53,86 @@ def ouvir():
         falar("Desculpe, houve um erro de conexão.")
         return None
 
+currency_mapping = {
+    'dólar': 'USD',
+    'dolar': 'USD',
+    'usd': 'USD',
+    'reais': 'BRL',
+    'real': 'BRL',
+    'brl': 'BRL',
+    'euro': 'EUR',
+    'eur': 'EUR',
+    'iene': 'JPY',
+    'jpy': 'JPY',
+    'libra': 'GBP',
+    'gbp': 'GBP',
+    'franco': 'CHF',
+    'chf': 'CHF',
+    'yuan': 'CNY',
+    'cny': 'CNY',
+    'peso': 'ARS',
+    'ars': 'ARS',
+}
+
 def obter_resposta(entrada_usuario):
     try:
+        entrada_usuario = entrada_usuario.lower()
 
         # Verificar se o usuário pediu por notícias
-        if "notícias" in entrada_usuario.lower():
-            # Extrair o tema das notícias da entrada do usuário
-            palavras = entrada_usuario.split()
-            if len(palavras) > 1:
-                termo_busca = palavras[-1]  # Pegamos a última palavra como tema
+        if "notícia" in entrada_usuario or "notícias" in entrada_usuario:
+            match = re.search(r'(?:notícia(?:s)? (?:sobre|de|do|da)|notícias|notícia) (.+)', entrada_usuario)
+            if match:
+                termo_busca = match.group(1)
             else:
-                termo_busca = "geral"  # Um tema genérico se não for especificado
-
-            # Chamar a função de obter notícias
+                termo_busca = "geral"
             return obter_noticias(termo_busca)
 
+            # Verificar se o usuário pediu por conversão de moedas
+        if "converte" or 'converter' in entrada_usuario and ("para" in entrada_usuario or "em" in entrada_usuario):
+            # Expressão regular para extrair quantidade, moeda origem e moeda destino
+            match = re.search(r'converte\s+([^\s]+)\s+([^\s]+)(?:\s+(?:para|em)\s+([^\s]+))?', entrada_usuario)
+            if match:
+                quantidade_str = match.group(1)
+                moeda_origem_nome = match.group(2)
+                moeda_destino_nome = match.group(3) if match.group(3) else ''
 
-        if "converter" in entrada_usuario.lower() and "para" in entrada_usuario.lower():
-            # Extrair moedas e quantidade da entrada do usuário
-            palavras = entrada_usuario.split()
-            moeda_origem = palavras[palavras.index("converter") + 1].upper()
-            quantidade = float(palavras[palavras.index("converter") + 2])
-            moeda_destino = palavras[palavras.index("para") + 1].upper()
-            # Chamar a função de conversão de moedas
-            return converter_moeda(moeda_origem, moeda_destino, quantidade)
+                # Normalizar quantidade
+                quantidade_str = quantidade_str.replace('r$', '').replace('$', '').replace('€', '').replace('£',
+                                                                                                                '').replace(
+                    ',', '.')
+                try:
+                    quantidade = float(quantidade_str)
+                except ValueError:
+                    return "Desculpe, não consegui entender o valor a ser convertido."
 
+                # Obter códigos das moedas
+                moeda_origem = currency_mapping.get(moeda_origem_nome.lower())
+                if moeda_origem is None:
+                    return f"Desculpe, não reconheço a moeda '{moeda_origem_nome}'."
 
-        if 'clima' in entrada_usuario.lower():
-            cidade = entrada_usuario.split('clima em')[-1].strip()
-            return obter_clima(cidade)
+                moeda_destino = currency_mapping.get(moeda_destino_nome.lower())
+                if moeda_destino is None or moeda_destino == '':
+                    return "Desculpe, você precisa especificar a moeda de destino."
 
-        # Formata o prompt que será enviado ao modelo
-        prompt = f"Usuário: {entrada_usuario}\nAssistente:"
+                return converter_moeda(moeda_origem, moeda_destino, quantidade)
+            else:
+                return "Desculpe, não consegui entender o comando de conversão. Por favor, tente novamente."
+
+        # Caso contrário, usar a API da OpenAI
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Você é um assistente virtual que fala português do Brasil."},
-                {"role": "user", "content": prompt}  # Enviando o prompt formatado
-            ]
+                {"role": "user", "content": entrada_usuario}
+            ],
+            max_tokens=150
         )
-        mensagem = response['choices'][0]['message']['content']
+        mensagem = response['choices'][0]['message']['content'].strip()
         return mensagem
+    except openai.error.RateLimitError:
+        return "Você excedeu sua cota de uso da API. Por favor, verifique seu plano de cobrança."
     except openai.error.OpenAIError as e:
-        print(f"Erro na API do OpenAI: {e}")
-        falar("Desculpe, houve um erro ao se comunicar com a API.")
-        return "Desculpe, houve um problema ao obter a resposta."
+        return f"Erro ao obter a resposta: {str(e)}"
 
 
 # Loop principal do programa
@@ -117,9 +149,10 @@ def executar_assistente():
             falar(resposta)
 
 def converter_moeda(moeda_origem, moeda_destino, quantidade):
-    dado = chamar_yml('currencyapi','api')
+    with open('config.yml', 'r') as arquivo:
+        dados = yaml.safe_load(arquivo)
 
-    api_key = dado
+    api_key = dados['currencyapi']['api']
     url = f"https://api.currencyconverterapi.com/api/v7/convert?q={moeda_origem}_{moeda_destino}&compact=ultra&apiKey={api_key}"
 
     try:
@@ -139,8 +172,10 @@ def converter_moeda(moeda_origem, moeda_destino, quantidade):
 
 
 def obter_clima(cidade):
-    dados = chamar_yml('openweathermap','api')
-    api_weather = dados
+    with open('config.yml', 'r') as arquivo:
+        dados = yaml.safe_load(arquivo)
+
+    api_weather = dados['openweathermap']['api']
     url = f"http://api.openweathermap.org/data/2.5/weather?q={cidade}&appid={api_weather}&lang=pt&units=metric"
     resposta = requests.get(url)
 
@@ -155,8 +190,9 @@ def obter_clima(cidade):
 
 
 def obter_noticias(termo_busca):
-    dados = chamar_yml('newsapi','api')
-    api_key = dados  # Substitua pela sua chave da API
+    with open('config.yml', 'r') as arquivo:
+        dados = yaml.safe_load(arquivo)
+    api_key = dados['newsapi']['api']
     url = f"https://newsapi.org/v2/everything?q={termo_busca}&language=pt&sortBy=publishedAt&apiKey={api_key}"
 
     try:
@@ -166,14 +202,13 @@ def obter_noticias(termo_busca):
 
         # Verifica se a API retornou resultados
         if dados["status"] == "ok" and dados["totalResults"] > 0:
-            noticias = dados["articles"][:5]  # Pegamos as 5 primeiras notícias
+            noticias = dados["articles"][:1]  # Pegamos as 5 primeiras notícias
             resposta_noticias = []
 
             for noticia in noticias:
                 titulo = noticia['title']
                 descricao = noticia['description']
-                url_noticia = noticia['url']
-                resposta_noticias.append(f"Título: {titulo}\nDescrição: {descricao}\nLink: {url_noticia}\n")
+                resposta_noticias.append(f"Título: {titulo}\nDescrição: {descricao}\n")
 
             return "\n\n".join(resposta_noticias)
         else:
